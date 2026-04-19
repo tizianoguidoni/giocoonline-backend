@@ -8,7 +8,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 
 ROOT_DIR = Path(__file__).parent
@@ -20,6 +22,25 @@ db = client[os.environ['DB_NAME']]
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+# Auth Config
+SECRET_KEY = os.environ.get("SECRET_KEY", "super-secret-ark-key-12345")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 1 week
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str):
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 class StatusCheck(BaseModel):
@@ -50,6 +71,23 @@ class ScoreCreate(BaseModel):
     time: float
     won: bool
     zone_reached: Optional[str] = "Dungeon"
+
+
+class UserBase(BaseModel):
+    username: str
+
+
+class UserCreate(UserBase):
+    password: str
+
+
+class UserLogin(UserBase):
+    password: str
+
+
+class UserInDB(UserBase):
+    hashed_password: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @api_router.get("/")
@@ -98,6 +136,40 @@ async def get_scores(limit: int = 20):
         if isinstance(r['timestamp'], str):
             r['timestamp'] = datetime.fromisoformat(r['timestamp'])
     return rows
+
+
+# --- AUTH ROUTES ---
+
+@api_router.post("/auth/register")
+async def register(user: UserCreate):
+    # Check if user exists
+    existing = await db.users.find_one({"username": user.username})
+    if existing:
+        return {"ok": False, "error": "Username già esistente"}
+    
+    hashed = hash_password(user.password)
+    user_doc = {
+        "username": user.username,
+        "hashed_password": hashed,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.users.insert_one(user_doc)
+    
+    token = create_access_token({"sub": user.username})
+    return {"ok": True, "token": token, "username": user.username}
+
+
+@api_router.post("/auth/login")
+async def login(user: UserLogin):
+    db_user = await db.users.find_one({"username": user.username})
+    if not db_user:
+        return {"ok": False, "error": "Credenziali non valide"}
+    
+    if not verify_password(user.password, db_user["hashed_password"]):
+        return {"ok": False, "error": "Credenziali non valide"}
+    
+    token = create_access_token({"sub": user.username})
+    return {"ok": True, "token": token, "username": user.username}
 
 
 app.include_router(api_router)
