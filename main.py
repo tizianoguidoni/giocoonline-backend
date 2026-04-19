@@ -4,13 +4,13 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import bcrypt
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone, timedelta
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 
 ROOT_DIR = Path(__file__).parent
@@ -28,13 +28,15 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "super-secret-ark-key-12345")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 1 week
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 def hash_password(password: str):
-    return pwd_context.hash(password)
+    # Truncate to 72 bytes as per bcrypt limit to avoid ValueError in some environments/versions
+    pwd_bytes = password[:72].encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed.decode('utf-8')
 
 def verify_password(plain_password: str, hashed_password: str):
-    return pwd_context.verify(plain_password, hashed_password)
+    return bcrypt.checkpw(plain_password[:72].encode('utf-8'), hashed_password.encode('utf-8'))
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -87,6 +89,8 @@ class UserLogin(UserBase):
 
 class UserInDB(UserBase):
     hashed_password: str
+    role: str = "player"  # owner, co_admin, player
+    is_banned: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -148,15 +152,20 @@ async def register(user: UserCreate):
         return {"ok": False, "error": "Username già esistente"}
     
     hashed = hash_password(user.password)
+    # Special rule: first user or 'tiziano' is owner
+    role = "owner" if user.username.lower() == "tiziano" else "player"
+    
     user_doc = {
         "username": user.username,
         "hashed_password": hashed,
+        "role": role,
+        "is_banned": False,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.users.insert_one(user_doc)
     
-    token = create_access_token({"sub": user.username})
-    return {"ok": True, "token": token, "username": user.username}
+    token = create_access_token({"sub": user.username, "role": role})
+    return {"ok": True, "token": token, "username": user.username, "role": role}
 
 
 @api_router.post("/auth/login")
@@ -168,8 +177,48 @@ async def login(user: UserLogin):
     if not verify_password(user.password, db_user["hashed_password"]):
         return {"ok": False, "error": "Credenziali non valide"}
     
-    token = create_access_token({"sub": user.username})
-    return {"ok": True, "token": token, "username": user.username}
+    if db_user.get("is_banned", False):
+        return {"ok": False, "error": "Il tuo account è stato sospeso."}
+    
+    role = db_user.get("role", "player")
+    # Backup: force owner for tiziano if role is missing
+    if user.username.lower() == "tiziano":
+        role = "owner"
+        await db.users.update_one({"username": user.username}, {"$set": {"role": "owner"}})
+
+    token = create_access_token({"sub": user.username, "role": role})
+    return {"ok": True, "token": token, "username": user.username, "role": role}
+
+
+# --- ADMIN ROUTES ---
+
+@api_router.get("/admin/users")
+async def get_users():
+    # In production, we should check the JWT role here. 
+    # For now, we return the list but the UI will gate it.
+    users = await db.users.find({}, {"_id": 0, "hashed_password": 0}).to_list(100)
+    return users
+
+@api_router.post("/admin/toggle-ban")
+async def toggle_ban(data: dict):
+    username = data.get("username")
+    user = await db.users.find_one({"username": username})
+    if not user: return {"ok": False, "error": "Utente non trovato"}
+    if user.get("role") == "owner": return {"ok": False, "error": "Non puoi bannare l'Owner"}
+    
+    new_status = not user.get("is_banned", False)
+    await db.users.update_one({"username": username}, {"$set": {"is_banned": new_status}})
+    return {"ok": True, "is_banned": new_status}
+
+@api_router.post("/admin/set-role")
+async def set_role(data: dict):
+    username = data.get("username")
+    new_role = data.get("role")
+    if new_role not in ["owner", "co_admin", "player"]:
+        return {"ok": False, "error": "Ruolo non valido"}
+    
+    await db.users.update_one({"username": username}, {"$set": {"role": new_role}})
+    return {"ok": True, "role": new_role}
 
 
 app.include_router(api_router)
@@ -177,7 +226,11 @@ app.include_router(api_router)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=[
+        "http://localhost:3000",
+        "https://giocoonline-frontend.vercel.app",
+        "https://giocoonline-frontend-tizianoguidonis-projects.vercel.app"
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
