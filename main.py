@@ -140,6 +140,24 @@ class EquipItem(BaseModel):
 class MazeWinRequest(BaseModel):
     gold: int = Field(..., ge=0)
 
+class ResetCharacterRequest(BaseModel):
+    email: str
+
+class ClanCreate(BaseModel):
+    name: str = Field(..., min_length=3, max_length=20)
+    description: str = Field(..., max_length=100)
+    tag: str = Field(..., min_length=2, max_length=5)
+
+class ClanResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    tag: Optional[str] = None
+    leader_id: str
+    leader_name: str
+    members: List[str]
+    created_at: str
+
 # ==================== COMPLETE ITEM CATALOG ====================
 
 
@@ -1836,6 +1854,125 @@ async def maze_win(data: MazeWinRequest, user: dict = Depends(get_current_user))
     
     return {"message": f"Successfully banked {data.gold} gold", "gold_gained": data.gold}
 
+@api_router.post("/admin/reset-character")
+async def admin_reset_character(data: ResetCharacterRequest, user: dict = Depends(get_current_user)):
+    if user.get('role') not in ['super_admin', 'co_admin', 'owner']:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    target_user = await db.users.find_one({'email': data.email})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Reset character to base stats
+    await db.characters.update_one(
+        {'user_id': target_user['id']},
+        {
+            '$set': {
+                'level': 1,
+                'xp': 0,
+                'reputation': 50,
+                'gold': 500,
+                'strength': 10,
+                'intelligence': 10,
+                'agility': 10,
+                'defense': 10,
+                'hp': 100,
+                'max_hp': 100,
+                'mana': 100,
+                'max_mana': 100,
+                'stat_points': 5,
+                'is_super_admin_stats': False if target_user['role'] != 'super_admin' else True
+            }
+        }
+    )
+    
+    return {"message": f"Character for {data.email} has been reset to level 1"}
+
+
+# ==================== CLAN SYSTEM ====================
+
+@api_router.get("/clans", response_model=List[ClanResponse])
+async def get_clans():
+    clans = await db.clans.find({}, {'_id': 0}).to_list(100)
+    return clans
+
+@api_router.post("/clans", response_model=ClanResponse)
+async def create_clan(data: ClanCreate, user: dict = Depends(get_current_user)):
+    character = await db.characters.find_one({'user_id': user['id']}, {'_id': 0})
+    if not character:
+        raise HTTPException(status_code=404, detail="Character not found")
+    
+    if character.get('clan_id'):
+        raise HTTPException(status_code=400, detail="Character already in a clan")
+    
+    clan_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    
+    clan = {
+        'id': clan_id,
+        'name': data.name,
+        'description': data.description,
+        'tag': data.tag,
+        'leader_id': character['id'],
+        'leader_name': character['name'],
+        'members': [character['id']],
+        'created_at': now
+    }
+    
+    await db.clans.insert_one(clan)
+    await db.characters.update_one({'id': character['id']}, {'$set': {'clan_id': clan_id}})
+    
+    return ClanResponse(**clan)
+
+@api_router.get("/clans/{clan_id}", response_model=ClanResponse)
+async def get_clan(clan_id: str):
+    clan = await db.clans.find_one({'id': clan_id}, {'_id': 0})
+    if not clan:
+        raise HTTPException(status_code=404, detail="Clan not found")
+    return ClanResponse(**clan)
+
+@api_router.post("/clans/{clan_id}/join")
+async def join_clan(clan_id: str, user: dict = Depends(get_current_user)):
+    character = await db.characters.find_one({'user_id': user['id']}, {'_id': 0})
+    if not character:
+        raise HTTPException(status_code=404, detail="Character not found")
+    
+    if character.get('clan_id'):
+        raise HTTPException(status_code=400, detail="Character already in a clan")
+    
+    clan = await db.clans.find_one({'id': clan_id})
+    if not clan:
+        raise HTTPException(status_code=404, detail="Clan not found")
+    
+    await db.clans.update_one({'id': clan_id}, {'$push': {'members': character['id']}})
+    await db.characters.update_one({'id': character['id']}, {'$set': {'clan_id': clan_id}})
+    
+    return {"message": f"Joined clan {clan['name']}"}
+
+@api_router.post("/clans/leave")
+async def leave_clan(user: dict = Depends(get_current_user)):
+    character = await db.characters.find_one({'user_id': user['id']}, {'_id': 0})
+    if not character:
+        raise HTTPException(status_code=404, detail="Character not found")
+    
+    clan_id = character.get('clan_id')
+    if not clan_id:
+        raise HTTPException(status_code=400, detail="Character not in a clan")
+    
+    clan = await db.clans.find_one({'id': clan_id})
+    if not clan:
+        await db.characters.update_one({'id': character['id']}, {'$set': {'clan_id': None}})
+        return {"message": "Left clan (clan data was missing)"}
+    
+    if clan['leader_id'] == character['id']:
+        # Disband if leader leaves
+        await db.clans.delete_one({'id': clan_id})
+        await db.characters.update_many({'clan_id': clan_id}, {'$set': {'clan_id': None}})
+        return {"message": "Clan disbanded as leader left"}
+    else:
+        await db.clans.update_one({'id': clan_id}, {'$pull': {'members': character['id']}})
+        await db.characters.update_one({'id': character['id']}, {'$set': {'clan_id': None}})
+        return {"message": "Left clan"}
 
 @api_router.get("/")
 async def root():
