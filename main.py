@@ -1120,6 +1120,34 @@ async def get_bosses():
         bosses.append({'id': boss_id, **boss})
     return bosses
 
+@api_router.get("/bosses/{boss_id}")
+async def get_boss_details(boss_id: str):
+    boss = BOSS_CATALOG.get(boss_id)
+    if not boss:
+        raise HTTPException(status_code=404, detail="Boss non trovato")
+    
+    # Add abilities and drops mapping for the UI
+    details = {
+        'id': boss_id,
+        **boss,
+        'abilities': [
+            "Attacco Pesante", 
+            "Furia" if boss['type'] in ['rare', 'epic', 'world'] else "Colpo Rapido",
+            "Maledizione" if boss['type'] in ['epic', 'world'] else "Urlo di Battaglia"
+        ][:2 if boss['type'] == 'normal' else 3],
+        'rewards': {
+            'xp': boss['xp'],
+            'gold': boss['gold'],
+            'drops': ["Pozione Minore", "Frammento"] if boss['type'] == 'normal' else ["Pozione Maggiore", "Cristallo", "Arma Rara"]
+        }
+    }
+    
+    if boss['type'] == 'world':
+        details['rewards']['drops'] = ["Nucleo del Caos", "Armatura Leggendaria", "Spada Epica"]
+        details['abilities'].append("Distruzione Globale")
+        
+    return details
+
 @api_router.post("/bosses/{boss_id}/fight")
 async def fight_boss(boss_id: str, user: dict = Depends(get_current_user)):
     character = await db.characters.find_one({'user_id': user['id']}, {'_id': 0})
