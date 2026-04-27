@@ -93,7 +93,7 @@ class CharacterResponse(BaseModel):
     gems: int = 0
     is_admin: bool = False
     role: str = "player"
-    equipment: Dict[str, Optional[str]] = {}  # helmet, secondary, sword, shield
+    equipment: Dict[str, Optional[str]] = {}  # helmet, secondary, sword, shield, backpack
     clan_id: Optional[str] = None
     created_at: str
 
@@ -135,7 +135,7 @@ class ShopPurchase(BaseModel):
 
 class EquipItem(BaseModel):
     item_id: str
-    slot: str = Field(..., pattern="^(helmet|secondary|sword|shield)$")
+    slot: str = Field(..., pattern="^(helmet|secondary|sword|shield|backpack)$")
 
 class MazeWinRequest(BaseModel):
     gold: int = Field(..., ge=0)
@@ -237,6 +237,12 @@ ITEM_CATALOG = {
     "mithril_ore": {"name": "Minerale di Mithril", "type": "material", "subtype": "ore", "rarity": "epic", "stats": {}, "price": 200, "shop": True},
     "dragon_scale": {"name": "Scaglia di Drago", "type": "material", "subtype": "drop", "rarity": "epic", "stats": {}, "price": 500, "shop": True},
     "phoenix_feather": {"name": "Piuma di Fenice", "type": "material", "subtype": "drop", "rarity": "legendary", "stats": {}, "price": 0, "shop": False, "admin_only": True},
+    
+    # ========== BACKPACKS (ZAINI) ==========
+    "small_backpack": {"name": "Zaino Piccolo", "type": "armor", "subtype": "backpack", "slot": "backpack", "rarity": "common", "stats": {"defense": 1, "agility": 1}, "price": 30, "shop": True},
+    "leather_backpack": {"name": "Zaino di Cuoio", "type": "armor", "subtype": "backpack", "slot": "backpack", "rarity": "uncommon", "stats": {"defense": 3, "agility": 2}, "price": 100, "shop": True},
+    "adventurer_backpack": {"name": "Zaino dell'Avventuriero", "type": "armor", "subtype": "backpack", "slot": "backpack", "rarity": "rare", "stats": {"defense": 6, "agility": 5, "hp_bonus": 20}, "price": 400, "shop": True},
+    "magical_backpack": {"name": "Zaino Magico", "type": "armor", "subtype": "backpack", "slot": "backpack", "rarity": "epic", "stats": {"defense": 10, "agility": 10, "hp_bonus": 50, "mana_bonus": 50}, "price": 1200, "shop": True},
 }
 
 # ========== BOSS CATALOG ==========
@@ -499,7 +505,7 @@ async def create_character(data: CharacterCreate, user: dict = Depends(get_curre
         'gems': 99999 if is_super_admin else 0,
         'is_admin': is_super_admin,
         'role': user.get('role', 'player'),
-        'equipment': {'helmet': None, 'secondary': None, 'sword': None, 'shield': None},
+        'equipment': {'helmet': None, 'secondary': None, 'sword': None, 'shield': None, 'backpack': None},
         'clan_id': None,
         'created_at': now
     }
@@ -571,7 +577,7 @@ async def get_equipment(user: dict = Depends(get_current_user)):
     if not character:
         raise HTTPException(status_code=404, detail="Character not found")
     
-    equipment = character.get('equipment', {'helmet': None, 'secondary': None, 'sword': None, 'shield': None})
+    equipment = character.get('equipment', {'helmet': None, 'secondary': None, 'sword': None, 'shield': None, 'backpack': None})
     
     # Get item details for equipped items
     equipped_items = {}
@@ -586,7 +592,7 @@ async def get_equipment(user: dict = Depends(get_current_user)):
             equipped_items[slot] = None
     
     return {
-        'slots': ['helmet', 'secondary', 'sword', 'shield'],
+        'slots': ['helmet', 'secondary', 'sword', 'shield', 'backpack'],
         'equipment': equipped_items,
         'character_id': character['id']
     }
