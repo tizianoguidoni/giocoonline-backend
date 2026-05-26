@@ -132,6 +132,9 @@ class ContestReward(BaseModel):
 class ShopPurchase(BaseModel):
     item_id: str
     quantity: int = 1
+    custom_name: Optional[str] = None
+    custom_stats: Optional[dict] = None
+    custom_rarity: Optional[str] = None
 
 class EquipItem(BaseModel):
     item_id: str
@@ -710,7 +713,7 @@ async def buy_item(data: ShopPurchase, user: dict = Depends(get_current_user)):
         'item_id': data.item_id
     }, {'_id': 0})
     
-    if existing and item['type'] in ['consumable', 'material', 'gem']:
+    if not data.custom_name and existing and item['type'] in ['consumable', 'material', 'gem']:
         # Stack consumables/materials/gems
         await db.inventory.update_one(
             {'id': existing['id']},
@@ -723,12 +726,12 @@ async def buy_item(data: ShopPurchase, user: dict = Depends(get_current_user)):
                 'id': str(uuid.uuid4()),
                 'character_id': character['id'],
                 'item_id': data.item_id,
-                'name': item['name'],
+                'name': data.custom_name if data.custom_name else item['name'],
                 'item_type': item['type'],
                 'subtype': item.get('subtype'),
                 'slot': item.get('slot'),
-                'rarity': item['rarity'],
-                'stats': item['stats'],
+                'rarity': data.custom_rarity if data.custom_rarity else item['rarity'],
+                'stats': data.custom_stats if data.custom_stats else item['stats'],
                 'quantity': 1,
                 'equipped': False
             }
